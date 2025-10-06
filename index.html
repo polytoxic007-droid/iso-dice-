@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Dschungel-Würfel – Bilder 1–6 + Shake</title>
+<style>
+  :root{
+    --size: 160px;                 /* Würfelkante */
+    --edge: #222;
+    --stage: calc(var(--size) * 3.2);
+    --bg:#f6f7f9; --fg:#111; --muted:#666; --btn:#111; --btn2:#666;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;touch-action:manipulation}
+  .wrap{min-height:100%;display:grid;place-items:center;padding:24px;box-sizing:border-box}
+  .app{width:min(680px,100%);display:grid;gap:14px;justify-items:center;text-align:center}
+  h1{margin:0;font-size:20px}.hint{font-size:13px;color:var(--muted)}
+
+  .stage{width:var(--stage);height:var(--stage);position:relative;perspective:2400px;display:grid;place-items:center;filter:drop-shadow(0 18px 20px rgba(0,0,0,.15))}
+  .iso{transform-style:preserve-3d;transform:rotateX(26.565deg) rotateZ(45deg)}
+
+  .cube{position:relative;width:var(--size);height:var(--size);transform-style:preserve-3d;will-change:transform}
+  .face{position:absolute;inset:0;background:#fff;border:2px solid var(--edge);border-radius:14px;overflow:hidden;display:grid;place-items:center}
+  .front  { transform: translateZ(calc(var(--size)/2)); }                  /* +Z → 1 */
+  .back   { transform: rotateY(180deg) translateZ(calc(var(--size)/2)); }  /* -Z → 6 */
+  .right  { transform: rotateY( 90deg) translateZ(calc(var(--size)/2)); }  /* +X → 3 */
+  .left   { transform: rotateY(-90deg) translateZ(calc(var(--size)/2)); }  /* -X → 4 */
+  .top    { transform: rotateX( 90deg) translateZ(calc(var(--size)/2)); }  /* +Y → 5 */
+  .bottom { transform: rotateX(-90deg) translateZ(calc(var(--size)/2)); }  /* -Y → 2 */
+
+  .art{width:100%;height:100%;object-fit:cover}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:6px}
+  button{appearance:none;border:0;background:var(--btn);color:#fff;padding:10px 14px;border-radius:10px;font-weight:600}
+  button.secondary{background:var(--btn2)}
+  #result{font-size:15px;color:#333;min-height:1.2em}
+  .perm{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="app">
+    <h1>Dschungel-Würfel</h1>
+    <div class="hint">Schütteln, doppeltippen oder „Würfeln“.</div>
+
+    <div class="stage" id="stage">
+      <div class="iso">
+        <div class="cube" id="cube">
+          <!-- JS setzt die Bilder rein -->
+          <div class="face front"></div>
+          <div class="face back"></div>
+          <div class="face right"></div>
+          <div class="face left"></div>
+          <div class="face top"></div>
+          <div class="face bottom"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="rollBtn">Würfeln</button>
+      <button id="permBtn" class="secondary">Shake aktivieren</button>
+    </div>
+    <div id="result" aria-live="polite"></div>
+    <div class="perm" id="permHint">iOS braucht einmalige Freigabe für Bewegungssensoren.</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // === Bild-Setup (deine 1:1-Bilder) ===
+  const facesSrc = {
+    1: { src: 'img/jungle-1.png', alt: '1' },
+    2: { src: 'img/jungle-2.png', alt: '2' },
+    3: { src: 'img/jungle-3.png', alt: '3' },
+    4: { src: 'img/jungle-4.png', alt: '4' },
+    5: { src: 'img/jungle-5.png', alt: '5' },
+    6: { src: 'img/jungle-6.png', alt: '6' },
+  };
+
+  const cube = document.getElementById('cube');
+  const facesEls = {
+    1: cube.querySelector('.front'),
+    6: cube.querySelector('.back'),
+    3: cube.querySelector('.right'),
+    4: cube.querySelector('.left'),
+    5: cube.querySelector('.top'),
+    2: cube.querySelector('.bottom')
+  };
+  Object.entries(facesEls).forEach(([num, el])=>{
+    const f = facesSrc[num];
+    el.innerHTML = `<img class="art" src="${f.src}" alt="${f.alt}">`;
+  });
+
+  const rollBtn = document.getElementById('rollBtn');
+  const permBtn = document.getElementById('permBtn');
+  const permHint = document.getElementById('permHint');
+  const result = document.getElementById('result');
+  const stage = document.getElementById('stage');
+
+  // Orientierung: Zahl X liegt oben (+Y)
+  const targetFor = {
+    1: {rx:-90, ry:0,   rz:0},
+    2: {rx:180, ry:0,   rz:0},
+    3: {rx:0,   ry:0,   rz:90},
+    4: {rx:0,   ry:0,   rz:-90},
+    5: {rx:0,   ry:0,   rz:0},
+    6: {rx:90,  ry:0,   rz:0},
+  };
+
+  let rolling=false, lastShake=0, dblTapT=0;
+  let current={rx:25,ry:35,rz:10,px:0,py:0};
+
+  const randInt=(a,b)=>Math.floor(Math.random()*(b-a+1))+a;
+  const randSign=()=> (Math.random()<.5?-1:1);
+  function setTransform(rx,ry,rz,px,py){
+    current={rx,ry,rz,px,py};
+    cube.style.transform=`translate3d(${px}px,${py}px,0) rotateX(${rx}deg) rotateY(${ry}deg) rotateZ(${rz}deg)`;
+  }
+
+  // Pseudo-Physik + Einrasten (Top-Face korrekt)
+  function rollPhysics(toNumber = randInt(1,6)){
+    if(rolling) return; rolling=true;
+    const t=targetFor[toNumber];
+    const spinX=360*randInt(1,3), spinY=360*randInt(0,2), spinZ=360*randInt(1,3);
+    const finalRX=t.rx+spinX, finalRY=t.ry+spinY, finalRZ=t.rz+spinZ;
+
+    let avx=randInt(420,780)*randSign(), avy=randInt(180,540)*randSign(), avz=randInt(420,780)*randSign();
+    let vx =randInt(160,260)*randSign(),  vy =randInt(160,260)*randSign();
+    let {rx,ry,rz}=current; let px=0,py=0;
+
+    const root=getComputedStyle(document.documentElement);
+    const bounds=parseFloat(root.getPropertyValue('--stage'))/2 - parseFloat(root.getPropertyValue('--size'))/2 - 8;
+
+    const start=performance.now(), phase1=850, phase2=600, bounce=0.58, frA=0.985, frL=0.982;
+    let last=start;
+
+    function frame(now){
+      const dt=(now-last)/1000; last=now;
+
+      if(now-start<phase1){
+        rx+=avx*dt; ry+=avy*dt; rz+=avz*dt; px+=vx*dt; py+=vy*dt;
+        const f60=60*dt; avx*=Math.pow(frA,f60); avy*=Math.pow(frA,f60); avz*=Math.pow(frA,f60); vx*=Math.pow(frL,f60); vy*=Math.pow(frL,f60);
+        if(px> bounds){px=bounds; vx=-vx*bounce; avx*=0.9; avy*=0.9; avz*=0.9;}
+        if(px<-bounds){px=-bounds;vx=-vx*bounce; avx*=0.9; avy*=0.9; avz*=0.9;}
+        if(py> bounds){py=bounds; vy=-vy*bounce; avx*=0.9; avy*=0.9; avz*=0.9;}
+        if(py<-bounds){py=-bounds;vy=-vy*bounce; avx*=0.9; avy*=0.9; avz*=0.9;}
+        cube.style.transition='none'; setTransform(rx,ry,rz,px,py); requestAnimationFrame(frame);
+
+      }else if(now-start<phase1+phase2){
+        const tN=(now-start-phase1)/phase2, u=tN*tN*(3-2*tN);
+        const crx=rx+(finalRX-rx)*u, cry=ry+(finalRY-ry)*u, crz=rz+(finalRZ-rz)*u, cpx=px*(1-u), cpy=py*(1-u);
+        cube.style.transition='none'; setTransform(crx,cry,crz,cpx,cpy); requestAnimationFrame(frame);
+
+      }else{
+        cube.style.transition='transform 180ms ease-out';
+        setTransform(finalRX,finalRY,finalRZ,0,0);
+        if(navigator.vibrate) navigator.vibrate(60);
+        result.textContent = `Ergebnis: ${toNumber}`;
+        rolling=false;
+      }
+    }
+    requestAnimationFrame(ts=>{last=ts;frame(ts);});
+  }
+
+  // UI-Events
+  document.getElementById('rollBtn').addEventListener('click',()=>rollPhysics());
+  document.getElementById('stage').addEventListener('touchend',()=>{
+    const now=Date.now(); if(now-dblTapT<300) rollPhysics(); dblTapT=now;
+  });
+
+  // Shake + iOS-Permission
+  async function enableShake(){
+    try{
+      if(typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function'){
+        const p=await DeviceMotionEvent.requestPermission();
+        if(p!=='granted'){ result.textContent='Bewegungszugriff verweigert.'; return; }
+      }
+      window.addEventListener('devicemotion', onMotion, {passive:true});
+      permBtn.textContent='Shake aktiv'; permBtn.disabled=true; permHint.textContent='Shake ist aktiv. Kräftig schütteln!'; result.textContent='';
+    }catch(e){ result.textContent='Bewegungssensor nicht verfügbar.'; }
+  }
+  const permBtn = document.getElementById('permBtn');
+  permBtn.addEventListener('click', enableShake);
+
+  let lastAcc={x:0,y:0,z:0};
+  function onMotion(e){
+    const a=e.accelerationIncludingGravity || e.acceleration; if(!a) return;
+    const dx=(a.x||0)-lastAcc.x, dy=(a.y||0)-lastAcc.y, dz=(a.z||0)-lastAcc.z; lastAcc={x:a.x||0,y:a.y||0,z:a.z||0};
+    const delta=Math.sqrt(dx*dx+dy*dy+dz*dz); const now=Date.now();
+    if(delta>14 && now-lastShake>900){ lastShake=now; rollPhysics(); }
+  }
+  let lastShake=0;
+
+  // Startpose
+  setTimeout(()=>{ cube.style.transition='transform 900ms cubic-bezier(.22,1,.36,1)'; setTransform(25,35,10,0,0); },60);
+
+  // Fallback: kein Motion-API
+  if(typeof DeviceMotionEvent==='undefined'){ permHint.textContent='Kein Bewegungssensor – nutze Button oder Doppeltipp.'; permBtn.style.display='none'; }
+})();
+</script>
+</body>
+</html>
